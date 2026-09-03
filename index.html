@@ -532,9 +532,9 @@
           class="shrink-0 p-1 text-sumi/40 dark:text-white/40 hover:text-hanko hover:bg-hanko/10 rounded-full transition">
           <i data-lucide="info" class="w-3.5 h-3.5"></i>
         </button>
-        <button type="button" id="fileSyncBadge" onclick="window.cloudSaveCurrent()"
+        <button type="button" id="fileSyncBadge" onclick="window.fileSyncBadgeClick()"
           class="hidden shrink-0 items-center gap-1 px-2 py-0.5 text-[11px] font-medium border transition"
-          title="目前的雲端同步狀態，點一下可立即同步">
+          title="目前的雲端同步狀態；已開啟雲端檔案時點一下可立即同步，尚未開啟時點一下會跳到「檔案」頁籤">
           <i data-lucide="circle" class="w-2 h-2 shrink-0" id="fileSyncBadgeIcon"></i>
           <span id="fileSyncBadgeText"></span>
         </button>
@@ -3793,18 +3793,21 @@
     const icon = document.getElementById('fileSyncBadgeIcon');
     const txt = document.getElementById('fileSyncBadgeText');
     if (!b || !icon || !txt) return;
-    if (!cloudCur.fileId) { b.classList.add('hidden'); b.classList.remove('flex'); return; }
+    // 雲端根本沒設定：整個徽章都沒有意義，隱藏起來。
+    if (!CLOUD.url) { b.classList.add('hidden'); b.classList.remove('flex'); return; }
     b.classList.remove('hidden');
     b.classList.add('flex');
     const styles = {
-      synced:  'border-moss/40 text-moss bg-moss/5 hover:bg-moss/10',
-      dirty:   'border-hanko/50 text-hanko bg-hanko/5 hover:bg-hanko/10',
-      syncing: 'border-sumi/20 dark:border-white/20 text-sumi/60 dark:text-white/60',
-      offline: 'border-hanko/50 text-hanko bg-hanko/5 hover:bg-hanko/10'
+      synced:   'border-moss/40 text-moss bg-moss/5 hover:bg-moss/10',
+      dirty:    'border-hanko/50 text-hanko bg-hanko/5 hover:bg-hanko/10',
+      syncing:  'border-sumi/20 dark:border-white/20 text-sumi/60 dark:text-white/60',
+      offline:  'border-hanko/50 text-hanko bg-hanko/5 hover:bg-hanko/10',
+      unlinked: 'border-sumi/25 dark:border-white/25 text-sumi/55 dark:text-white/55 hover:bg-sumi/5 dark:hover:bg-white/5'
     };
     const iconStyles = {
       synced: 'text-moss fill-moss', dirty: 'text-hanko fill-hanko',
-      syncing: 'text-sumi/40 dark:text-white/40 animate-pulse', offline: 'text-hanko fill-hanko'
+      syncing: 'text-sumi/40 dark:text-white/40 animate-pulse', offline: 'text-hanko fill-hanko',
+      unlinked: 'text-sumi/35 dark:text-white/35'
     };
     b.className = 'flex shrink-0 items-center gap-1 px-2 py-0.5 text-[11px] font-medium border transition ' +
       (styles[kind] || styles.dirty);
@@ -3812,8 +3815,19 @@
     txt.textContent = text;
   }
 
-  // 沒有進行中的同步／重試時，徽章單純反映 cloudDirty：未同步或已同步。
+  // 目前這份內容還沒對應到任何一份雲端檔案（例如重新整理後瀏覽器自動帶回的暫存內容）時，
+  // 不要整個隱藏徽章 —— 那正是使用者最容易搞不清楚「有沒有同步」的時刻。
+  // 改顯示「尚未同步」並直接標註作法，點下去就帶去「檔案」頁籤。
+  const UNLINKED_HINT = '尚未同步（點擊樹狀結構檔案進行同步）';
+
+  window.fileSyncBadgeClick = function(){
+    if (cloudCur.fileId) { window.cloudSaveCurrent(); return; }
+    window.setSidebarTab('files');
+  };
+
+  // 沒有進行中的同步／重試時，徽章反映目前狀態：未關聯雲端檔案／未同步／已同步。
   function refreshSyncBadge(){
+    if (!cloudCur.fileId) { paintSyncBadge('unlinked', UNLINKED_HINT); return; }
     paintSyncBadge(cloudDirty ? 'dirty' : 'synced', cloudDirty ? '未同步' : '已同步');
   }
 
@@ -3991,6 +4005,7 @@
       window.localStorage.setItem(CLOUD_RETRY_BASE_KEY, String(CLOUD.retryBase));
     } catch(e){}
     restartCloudAutoSync();
+    refreshSyncBadge();
     window.toggleCloudSettings(false);
     window.cloudRefresh(true);
   };
@@ -4361,7 +4376,7 @@
     });
     if (!go) return;
     await cloudDo('remove', { type: 'file', id: f.id }, '已刪除檔案');
-    if (cloudCur.fileId === f.id) { releaseLock(f.id); cloudCur = { fileId: '', rev: 0, folderId: '', name: '' }; paintSyncBadge('synced',''); }
+    if (cloudCur.fileId === f.id) { releaseLock(f.id); cloudCur = { fileId: '', rev: 0, folderId: '', name: '' }; refreshSyncBadge(); }
   }
 
   async function cloudMove(type, id, toFolderId){
@@ -4714,7 +4729,7 @@
       const r = await cloudApi('restore', { backup: bk, mode: mode });
       if (!r.ok) { setCloudState('還原失敗'); await cloudAlert('還原失敗', r.error || '還原失敗。', 'danger'); return; }
       cloudCur = { fileId: '', rev: 0, folderId: '', name: '' };
-      paintSyncBadge('synced','');
+      refreshSyncBadge();
       assetStore.clear(); assetByBlob.clear();
       await window.cloudRefresh(true);
       setCloudState('已還原 ' + r.files + ' 檔');
@@ -4993,6 +5008,7 @@
     const savedTab = localStorage.getItem('wenji-sidebar-tab');
     if (savedTab === 'outline' || savedTab === 'files') { window.setSidebarTab(savedTab); }
     if (CLOUD.url) { window.cloudRefresh(true); } else { setCloudState('未設定'); renderFileTree(); renderRecentFiles(); }
+    refreshSyncBadge();
     restartCloudAutoSync();
     const scrollSyncSaved = localStorage.getItem('wenji-scroll-sync') === '1';
     const zoomSyncSaved = localStorage.getItem('wenji-zoom-sync') === '1';
