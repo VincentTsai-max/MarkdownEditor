@@ -532,6 +532,12 @@
           class="shrink-0 p-1 text-sumi/40 dark:text-white/40 hover:text-hanko hover:bg-hanko/10 rounded-full transition">
           <i data-lucide="info" class="w-3.5 h-3.5"></i>
         </button>
+        <button type="button" id="fileSyncBadge" onclick="window.cloudSaveCurrent()"
+          class="hidden shrink-0 items-center gap-1 px-2 py-0.5 text-[11px] font-medium border transition"
+          title="目前的雲端同步狀態，點一下可立即同步">
+          <i data-lucide="circle" class="w-2 h-2 shrink-0" id="fileSyncBadgeIcon"></i>
+          <span id="fileSyncBadgeText"></span>
+        </button>
       </div>
       <div id="fileSourcePopover" class="hidden absolute left-0 top-full mt-1.5 z-50 w-72 max-w-[85vw] bg-washi dark:bg-washiDark-panel border border-sumi/15 dark:border-white/15 shadow-lg p-3 text-xs text-sumi/80 dark:text-white/80 font-sans leading-relaxed">
         <div class="flex items-center gap-1.5 mb-1.5 text-sumi dark:text-[#E8E3D4] font-medium">
@@ -3780,6 +3786,37 @@
 
   // 「有未同步變更」的小圓點：直接改那一顆 DOM 就好。
   // 若每次按鍵都重畫整棵檔案樹，展開狀態與捲動位置都會被打斷。
+  // 檔名旁的同步狀態徽章：不管使用者有沒有點開側欄，都能一眼看到目前這份檔案同步了沒。
+  // 這是直接回應「不知道有沒有同步」的抱怨 —— 側欄的狀態列太容易被忽略。
+  function paintSyncBadge(kind, text){
+    const b = document.getElementById('fileSyncBadge');
+    const icon = document.getElementById('fileSyncBadgeIcon');
+    const txt = document.getElementById('fileSyncBadgeText');
+    if (!b || !icon || !txt) return;
+    if (!cloudCur.fileId) { b.classList.add('hidden'); b.classList.remove('flex'); return; }
+    b.classList.remove('hidden');
+    b.classList.add('flex');
+    const styles = {
+      synced:  'border-moss/40 text-moss bg-moss/5 hover:bg-moss/10',
+      dirty:   'border-hanko/50 text-hanko bg-hanko/5 hover:bg-hanko/10',
+      syncing: 'border-sumi/20 dark:border-white/20 text-sumi/60 dark:text-white/60',
+      offline: 'border-hanko/50 text-hanko bg-hanko/5 hover:bg-hanko/10'
+    };
+    const iconStyles = {
+      synced: 'text-moss fill-moss', dirty: 'text-hanko fill-hanko',
+      syncing: 'text-sumi/40 dark:text-white/40 animate-pulse', offline: 'text-hanko fill-hanko'
+    };
+    b.className = 'flex shrink-0 items-center gap-1 px-2 py-0.5 text-[11px] font-medium border transition ' +
+      (styles[kind] || styles.dirty);
+    icon.className = 'w-2 h-2 shrink-0 ' + (iconStyles[kind] || iconStyles.dirty);
+    txt.textContent = text;
+  }
+
+  // 沒有進行中的同步／重試時，徽章單純反映 cloudDirty：未同步或已同步。
+  function refreshSyncBadge(){
+    paintSyncBadge(cloudDirty ? 'dirty' : 'synced', cloudDirty ? '未同步' : '已同步');
+  }
+
   function markCloudDirty(v){
     if (cloudDirty === v) return;
     cloudDirty = v;
@@ -3806,6 +3843,7 @@
     }
     const bdot = document.getElementById('btnCloudSaveDot');
     if (bdot) bdot.classList.toggle('opacity-0', !cloudDirty);
+    refreshSyncBadge();
   }
 
   // ---- 最近開啟 ----
@@ -4323,7 +4361,7 @@
     });
     if (!go) return;
     await cloudDo('remove', { type: 'file', id: f.id }, '已刪除檔案');
-    if (cloudCur.fileId === f.id) { releaseLock(f.id); cloudCur = { fileId: '', rev: 0, folderId: '', name: '' }; }
+    if (cloudCur.fileId === f.id) { releaseLock(f.id); cloudCur = { fileId: '', rev: 0, folderId: '', name: '' }; paintSyncBadge('synced',''); }
   }
 
   async function cloudMove(type, id, toFolderId){
@@ -4424,6 +4462,10 @@
 
   // ---- 開檔與存檔 ----
   window.cloudOpenFile = async function(id){
+    // 已經開著同一份檔案：直接略過，不要重新從雲端抓一次。
+    // 這裡如果照常往下跑，會用雲端版本覆蓋編輯區目前的內容 —— 若這份檔案還沒同步，
+    // 等於用舊資料蓋掉使用者剛打的字，而且因為 id 相同，換檔警告完全不會被觸發。
+    if (cloudCur.fileId === id) { toastSave('這份檔案已經是開啟中的內容'); return; }
     if (cloudCur.fileId && cloudCur.fileId !== id && cloudDirty) {
       const go = await cloudConfirm({
         title: '有尚未同步的變更',
@@ -4465,6 +4507,7 @@
       historyIndex = -1;
       pushHistory(true);
       cloudDirty = false;
+      updateDirtyDot(); // 讓徽章立刻現形並顯示「已同步」，而不是沿用上一份檔案的殘留狀態
       pushRecent(r.file.id);
       setCloudState('已開啟：' + r.file.name);
       renderFileTree();
@@ -4486,6 +4529,7 @@
       return;
     }
     setCloudState('同步中…');
+    paintSyncBadge('syncing', '同步中…');
     try {
       const cloudText = await blobTextToAssets(editor.value);
       if (cloudText.length > 49000) {
@@ -4515,13 +4559,14 @@
           buttons: [{ label: '覆蓋雲端', value: true, style: 'danger' }],
           cancelLabel: '放棄同步'
         });
-        if (!go) { setCloudState('已取消同步'); return; }
+        if (!go) { setCloudState('已取消同步'); refreshSyncBadge(); return; }
         r = await cloudApi('savefile', Object.assign({}, payload, { force: true }));
       }
       if (!r.ok) {
         // 後端有回應＝不是連線問題，重試不會有不同結果，直接停掉排隊中的重試
         cancelRetry();
         setCloudState('同步失敗');
+        paintSyncBadge('dirty', '同步失敗');
         if (!silent) await cloudAlert('同步失敗', r.error || '同步失敗。', 'danger');
         return;
       }
@@ -4535,6 +4580,7 @@
     } catch(err){
       // 連不上：先排下一次重試，再視情況告知（重試中不重複跳視窗）
       scheduleRetry();
+      paintSyncBadge('offline', '離線・稍後重試');
       if (!silent) {
         await cloudAlert('無法連線',
           (err.message || '無法連線到雲端。') + '\n\n變更仍留在編輯器裡，稍後會自動重試；也可以隨時再按一次「同步」。',
@@ -4668,6 +4714,7 @@
       const r = await cloudApi('restore', { backup: bk, mode: mode });
       if (!r.ok) { setCloudState('還原失敗'); await cloudAlert('還原失敗', r.error || '還原失敗。', 'danger'); return; }
       cloudCur = { fileId: '', rev: 0, folderId: '', name: '' };
+      paintSyncBadge('synced','');
       assetStore.clear(); assetByBlob.clear();
       await window.cloudRefresh(true);
       setCloudState('已還原 ' + r.files + ' 檔');
